@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+exports/
+qa/
+.env
+.env.*
+data/*
+!data/demo_DOWN.csv
+!data/demo_DOWN_markers.csv
+!data/README.md
+prepare_package.py
+publish_repository.py
+*.zip
