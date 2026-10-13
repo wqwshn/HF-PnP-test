@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import hashlib
 import io
@@ -36,6 +37,22 @@ PLOT_LOCK = threading.Lock()
 plt.rcParams.update({"font.family": "Arial", "svg.fonttype": "none",
                      "pdf.fonttype": 42, "axes.linewidth": .6,
                      "axes.unicode_minus": True})
+
+
+def decode_csv(data):
+    """Strictly decode common CSV encodings; never discard or replace bytes."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings = ("utf-16",)
+    else:
+        encodings = ("utf-8-sig", "gb18030")
+    for encoding in encodings:
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in text and "\ufffd" not in text:
+            return text
+    raise ValueError("CSV 编码无法识别或文件已损坏。支持 UTF-8、GBK/GB18030、带 BOM 的 UTF-16；请用 CSV UTF-8 重新导出。")
 
 
 def read_rows(text):
@@ -467,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/demo":
                 file = ROOT / "data" / "demo_DOWN.csv"
                 marker = file.with_name(file.stem+"_markers.csv")
-                result = register(file.read_text(encoding="utf-8-sig"), marker.read_text(encoding="utf-8-sig"), file.name, marker.name)
+                result = register(decode_csv(file.read_bytes()), decode_csv(marker.read_bytes()), file.name, marker.name)
             elif self.path == "/api/choose":
                 raw_path = choose_file("raw")
                 if not raw_path:
@@ -479,9 +496,16 @@ class Handler(BaseHTTPRequestHandler):
                     if not chosen:
                         return self.json_response({"cancelled": True})
                     marker = Path(chosen)
-                result = register(file.read_text(encoding="utf-8-sig"), marker.read_text(encoding="utf-8-sig"), file.name, marker.name)
+                result = register(decode_csv(file.read_bytes()), decode_csv(marker.read_bytes()), file.name, marker.name)
             elif self.path == "/api/upload":
-                result = register(p["raw"], p["marker"], p["raw_name"], p["marker_name"])
+                if "raw_base64" in p and "marker_base64" in p:
+                    raw = decode_csv(base64.b64decode(p["raw_base64"], validate=True))
+                    marker = decode_csv(base64.b64decode(p["marker_base64"], validate=True))
+                else:
+                    raw, marker = p["raw"], p["marker"]
+                    if "\ufffd" in raw or "\ufffd" in marker:
+                        raise ValueError("上传文本已出现编码替换字符，请刷新页面后重新上传 CSV。")
+                result = register(raw, marker, p["raw_name"], p["marker_name"])
             elif self.path in ("/api/preview", "/api/export"):
                 ds = SESSIONS.get(p.get("session"))
                 if ds is None:

@@ -51,7 +51,7 @@ py -3.11 -m venv .venv
 
 ## 输入 CSV 格式
 
-文件使用 UTF-8，可带 BOM。原始 CSV 至少包含：
+文件支持 UTF-8（可带 BOM）、GBK/GB18030，以及带 BOM 的 UTF-16；两份 CSV 可以使用不同编码。建议新文件使用 UTF-8。原始 CSV 至少包含：
 
 | 列 | 含义 |
 |---|---|
@@ -124,3 +124,11 @@ P[kPa] = 1000 × F[N] / A[mm²]
 - **设置恢复失败**：需匹配同一原始和 marker 文件，文件内容变动会改变身份。BOM 与 CRLF/LF 换行差异已规范化。
 
 运行依赖仅为 Python、NumPy、Matplotlib。无需 Node.js、Codex 或 Playwright。实验数据、导出、日志和虚拟环境默认不进入版本控制。
+
+## CSV 编码兼容修复（2026-10-13）
+
+本地选择与浏览器上传现在统一支持 UTF-8、GBK/GB18030 和带 BOM 的 UTF-16。GBK 表头中的全角括号不会再触发 UTF-8 解码错误；无法正确解码的内容不会被忽略或替换。
+
+更新后需停止旧服务再启动，并刷新浏览器页面。后台启动的旧服务仍会运行旧代码；如果不方便结束旧服务，可用 `python app.py --port 8770 --open-browser` 启动新版。原始 CSV 无需修改。
+
+回归测试：`python -m unittest discover -p "test_*.py" -v`，包含真实 HTTP 导入接口的多编码测试。
