@@ -33,6 +33,7 @@ DEFAULTS = dict(direction="DOWN", channel="Ut1", area=math.pi * 19**2 / 4,
                 color="#D986A2", sd=True, ymin_g=None, ymax_g=None,
                 ymin_h=None, ymax_h=None, selected=0, overrides={})
 SESSIONS = {}
+EXPORT_FILES = {}
 PLOT_LOCK = threading.Lock()
 plt.rcParams.update({"font.family": "Arial", "svg.fonttype": "none",
                      "pdf.fonttype": 42, "axes.linewidth": .6,
@@ -387,7 +388,7 @@ def render(ds, payload, export=False):
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 stem = re.sub(r"[^\w.-]", "_", Path(ds["name"]).stem)
                 prefix = f"{stem}_{c['direction']}_{c['channel']}"
-                folder = ROOT / "exports" / f"{prefix}_{stamp}"
+                folder = Path(ds.get("export_root", ROOT / "exports")) / f"{prefix}_{stamp}"
                 folder.mkdir(parents=True)
                 files = []
                 for panel, fig in zip(("g", "h"), figures):
@@ -405,7 +406,12 @@ def render(ds, payload, export=False):
                     writer.writerows(points)
                 (folder / "figure_metadata.json").write_text(json.dumps({p: {k: v for k, v in result['panels'][p].items() if k != 'svg'} for p in ('g', 'h')}, indent=2), encoding="utf-8")
                 files += ["settings.json", "points.csv", "figure_metadata.json"]
-                result["export"] = dict(folder=str(folder), files=[dict(name=f, url="/exports/"+folder.name+"/"+f) for f in files])
+                downloads = []
+                for name in files:
+                    token = uuid.uuid4().hex
+                    EXPORT_FILES[token] = folder / name
+                    downloads.append(dict(name=name, url="/download/" + token))
+                result["export"] = dict(folder=str(folder), files=downloads)
             else:
                 result["overview"], result["trace"] = diagnostic_figures(ds, points, c)
         finally:
@@ -414,14 +420,16 @@ def render(ds, payload, export=False):
     return result
 
 
-def register(raw, marker, raw_name, marker_name):
+def register(raw, marker, raw_name, marker_name, source_path=None):
     ds = parse_dataset(raw, marker, raw_name, marker_name)
+    ds["export_root"] = Path(source_path).resolve().parent if source_path else ROOT / "exports"
     sid = uuid.uuid4().hex
     SESSIONS[sid] = ds
     # This local tool keeps only a small number of datasets in memory.
     while len(SESSIONS) > 6:
         del SESSIONS[next(iter(SESSIONS))]
     return dict(session=sid, name=ds["name"], marker_name=ds["marker_name"],
+                export_root=str(ds["export_root"]),
                 samples=len(ds["t"]), duration=float(ds["t"][-1]-ds["t"][0]),
                 raw_sha256=ds["raw_sha256"], marker_sha256=ds["marker_sha256"],
                 markers=[{k: v for k, v in m.items() if k != "row"} for m in ds["markers"]],
@@ -454,6 +462,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(DEFAULTS)
         if path == "/":
             file = ROOT / "index.html"
+        elif path.startswith("/download/"):
+            file = EXPORT_FILES.get(path.removeprefix("/download/"))
+            if file is None:
+                return self.send_error(404)
         elif path.startswith("/exports/"):
             file = (ROOT / path.lstrip("/")).resolve()
             if ROOT / "exports" not in file.parents:
@@ -496,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not chosen:
                         return self.json_response({"cancelled": True})
                     marker = Path(chosen)
-                result = register(decode_csv(file.read_bytes()), decode_csv(marker.read_bytes()), file.name, marker.name)
+                result = register(decode_csv(file.read_bytes()), decode_csv(marker.read_bytes()), file.name, marker.name, source_path=file)
             elif self.path == "/api/upload":
                 if "raw_base64" in p and "marker_base64" in p:
                     raw = decode_csv(base64.b64decode(p["raw_base64"], validate=True))
