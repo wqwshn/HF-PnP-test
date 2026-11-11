@@ -33,7 +33,7 @@ class ExportLocationTests(unittest.TestCase):
                     self.assertEqual(Path(native['export_root']),source.resolve())
                     result=post('/api/export',{'session':native['session'],'config':{}})['export']
                     self.assertEqual(Path(result['folder']).parent,source.resolve())
-                    self.assertEqual(len(result['files']),9)
+                    self.assertEqual(len(result['files']),10)
                     for file in result['files']:
                         with urlopen(address+file['url']) as response:
                             self.assertEqual(response.read(),(Path(result['folder'])/file['name']).read_bytes())

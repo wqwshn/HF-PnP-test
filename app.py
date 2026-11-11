@@ -25,13 +25,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 import numpy as np
+from grid_points import build_grid
 
 ROOT = Path(__file__).resolve().parent
 DEFAULTS = dict(direction="DOWN", channel="Ut1", area=math.pi * 19**2 / 4,
                 diameter=19, mode="pressure", zero=0, window=1,
                 width=38.1, height=33.16, fontsize=7, linewidth=0.8,
                 color="#D986A2", sd=True, ymin_g=None, ymax_g=None,
-                ymin_h=None, ymax_h=None, selected=0, overrides={})
+                ymin_h=None, ymax_h=None, selected=0, overrides={}, grid_edits={}, grid_basis=None)
 SESSIONS = {}
 EXPORT_FILES = {}
 PLOT_LOCK = threading.Lock()
@@ -271,6 +272,9 @@ def make_panel(points, c, panel):
         ax.set_xlim(lo, hi)
         ax.xaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3, steps=[1, 2, 2.5, 5, 10]))
     segments, interp = series(points, key, lo, hi, [0] if panel == "g" else [])
+    if panel == "g":
+        segments = [([p["distance"] for p in points],
+                     [p["mean"] if p["mean"] is not None else np.nan for p in points])]
     for x, y in segments:
         ax.plot(x, y, color=c["color"], lw=c["linewidth"], zorder=2)
     visible = [p for p in points if p[key] is not None and p["mean"] is not None and lo <= p[key] <= hi]
@@ -370,12 +374,18 @@ def manifest(ds, c, notes):
 def render(ds, payload, export=False):
     c, points, warnings = summarize(ds, payload.get("config", {}), payload.get("notes"))
     notes = [[p["distance_raw"], p["force"]] for p in points]
-    result = dict(config=c, points=points, warnings=warnings, panels={})
+    grid, basis, edits = build_grid(points, c["channel"], c.get("grid_edits"), c.get("grid_basis"))
+    c.update(grid_basis=basis, grid_edits=edits)
+    grid_plot = [dict(distance=r["distance_mm"], mean=r["voltage_V"], sd=None) for r in grid]
+    result = dict(config=c, points=points, grid=grid, warnings=warnings, panels={})
     with PLOT_LOCK:
         figures = []
         try:
             for panel in ("g", "h"):
-                fig, meta = make_panel(points, c, panel)
+                fig, meta = make_panel(grid_plot if panel == "g" else points, c, panel)
+                if panel == "g":
+                    meta["point_kind"] = "fixed_grid_derived"
+                    meta["edited_points"] = len(edits)
                 figures.append(fig)
                 result["panels"][panel] = dict(svg=encode_figure(fig), **meta)
                 if meta["clipping"]:
@@ -405,7 +415,11 @@ def render(ds, payload, export=False):
                     writer.writeheader()
                     writer.writerows(points)
                 (folder / "figure_metadata.json").write_text(json.dumps({p: {k: v for k, v in result['panels'][p].items() if k != 'svg'} for p in ('g', 'h')}, indent=2), encoding="utf-8")
-                files += ["settings.json", "points.csv", "figure_metadata.json"]
+                with (folder / "distance_voltage.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(grid[0]))
+                    writer.writeheader()
+                    writer.writerows(grid)
+                files += ["settings.json", "points.csv", "figure_metadata.json", "distance_voltage.csv"]
                 downloads = []
                 for name in files:
                     token = uuid.uuid4().hex
@@ -434,6 +448,25 @@ def register(raw, marker, raw_name, marker_name, source_path=None):
                 raw_sha256=ds["raw_sha256"], marker_sha256=ds["marker_sha256"],
                 markers=[{k: v for k, v in m.items() if k != "row"} for m in ds["markers"]],
                 defaults=DEFAULTS)
+
+
+def recent_directory():
+    try:
+        saved = json.loads((ROOT / ".ui_preferences.json").read_text(encoding="utf-8"))
+        folder = Path(saved["last_directory"])
+        if folder.is_dir():
+            return folder
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return ROOT / "data"
+
+
+def remember_directory(path):
+    try:
+        (ROOT / ".ui_preferences.json").write_text(
+            json.dumps({"last_directory": str(Path(path).resolve().parent)}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # A read-only application folder must not block selecting data.
 
 
 def choose_file(kind):
@@ -545,8 +578,10 @@ def main():
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        path = filedialog.askopenfilename(parent=root, title="选择原始 CSV" if args.choose == "raw" else "选择配套 marker CSV", initialdir=ROOT / "data", filetypes=[("CSV", "*.csv")])
+        path = filedialog.askopenfilename(parent=root, title="选择原始 CSV" if args.choose == "raw" else "选择配套 marker CSV", initialdir=recent_directory(), filetypes=[("CSV", "*.csv")])
         root.destroy()
+        if path and args.choose == "raw":
+            remember_directory(path)
         print(json.dumps(path, ensure_ascii=True))
         return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

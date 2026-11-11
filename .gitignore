@@ -13,3 +13,5 @@ data/*
 prepare_package.py
 publish_repository.py
 *.zip
+
+.ui_preferences.json
